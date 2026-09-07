@@ -1,0 +1,145 @@
+#pragma kernel MarchingCubes
+
+cbuffer MarchingCubeParams
+{
+    float size;
+    uint resolution;
+    uint res;
+    uint maxVertices;
+}
+
+// SDF 格点直传为 StructuredBuffer(布局与 CPU values 一致:z*res*res + y*res + x,
+// res = 每轴格点数 = cells + 1)。等价于旧版点采样 texel,但省掉了每块一张 Texture3D
+// 和 uv 换算——CPU 的 values 数组是唯一真值,每次 dispatch 由 C# 上传到 scratch buffer。
+StructuredBuffer<float> SDF_VALUES;
+
+// MC tables come from C# (CubicMethod/McTables.cs) as structured buffers — dynamic
+// indexing of global static const arrays cannot be mapped to cs_5_0 by D3DCompiler
+// ("cannot map expression to cs_5_0 instruction set"). Tables.compute is kept on disk
+// as the reference copy of the data, it is no longer included.
+StructuredBuffer<uint> edgeTable;
+StructuredBuffer<int> triTable;
+
+RWStructuredBuffer<float3> Vertices;
+RWStructuredBuffer<float3> Normals;
+RWStructuredBuffer<uint> Triangles;
+RWStructuredBuffer<uint> Counters;
+
+
+// from iq
+// deprecated
+// float3 CalcNormal(float3 p){
+//    float3 n = float3(0.0, 0.0, 0.0);
+//    for( int i = 0; i < 4; i++)
+//    {
+//       float3 e = 0.5773 * 2.0 * float3((i+3>>1&1) - 0.5, (i>>1&1) - 0.5,(i&1) - 0.5);
+//       n += e * SDScene(p + 0.0005*e);
+//    }
+//    return normalize(n);
+// }
+
+// for convenience of loop
+static const uint LoopTable0[4 ] = {0, 1, 1, 0 };
+static const uint LoopTable1[12] = { 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3 };
+static const uint LoopTable2[12] = { 1, 2, 3, 0 ,5, 6, 7, 4, 4, 5, 6, 7 };
+
+// 4x4x4 = 64 threads/group: 8x8x8 (512) pushed per-thread register usage past D3D11's
+// recommended 16384 total (warning X4714 — vertList's dynamic indexing costs ~36 x# registers
+// per thread). Cells are independent, so the smaller group only improves occupancy.
+[numthreads(4,4,4)]
+void MarchingCubes (uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    uint j = id.y;
+    uint k = id.z;
+
+    if (i >= resolution || j >= resolution || k >= resolution) return;
+
+    float voxel_size = size / float(resolution);
+    uint state = 0;
+    float3 positions[8];
+    float  values[8];
+
+    [unroll]
+   // compute the voxel
+    for (uint m = 0; m < 8; ++m)
+    {
+        positions[m] =
+            float3(
+                -(size / 2.0) + (i + ((m/4)&1)) * voxel_size,
+                -(size / 2.0) + (j + 1 - ((m/2)&1)) * voxel_size,
+                -(size / 2.0) + (k + LoopTable0[m&3]) * voxel_size
+                );
+
+        uint3 corner = uint3(i + ((m/4)&1), j + 1 - ((m/2)&1), k + LoopTable0[m&3]);
+        values[m] = SDF_VALUES[corner.z * res * res + corner.y * res + corner.x];
+
+        if (values[m] < 0.0)
+            state |= 1 << m;
+    }
+
+   // no intersection
+    if (edgeTable[state] == 0) return;
+
+   // use edgeTable to find && compute the intersections
+    float3 vertList[12];
+
+    [unroll]
+    for (int n = 0; n < 12; ++n)
+        if ((edgeTable[state] & 1 << n) != 0)
+        {
+            int s1 = LoopTable1[n];
+            int s2 = LoopTable2[n];
+
+           // ensure the same point of different voxel mapping to the same position
+            if ((positions[s1] - positions[s2]).x > 0.0)
+            {
+                int temp = s1;
+                s1 = s2;
+                s2 = temp;
+            }
+
+           // avoid NaN
+            if (abs(values[s1]) < 0.0002)
+            {
+               vertList[n] = positions[s1];
+            }
+            else if (abs(values[s2]) < 0.0002)
+            {
+               vertList[n] = positions[s2];
+            }
+           // now values[s1] - values[s2] can't be 0
+            else
+            {
+               float t = values[s1] / (values[s1] - values[s2]);
+               vertList[n] = lerp(positions[s1], positions[s2], t);
+            }
+        }
+
+   // use triTable to assemble triangles
+    for (int s = 0; s < 16; s += 3)
+    {
+        int triIndex = state * 16 + s;
+        if (triTable[triIndex] == -1) break;
+
+        int v0 = triTable[triIndex + 0];
+        int v1 = triTable[triIndex + 1];
+        int v2 = triTable[triIndex + 2];
+
+        uint baseIndex;
+        InterlockedAdd(Counters[0], 3, baseIndex);
+
+        if (baseIndex + 2 < maxVertices)
+        {
+            Vertices[baseIndex + 0] = vertList[v0];
+            Vertices[baseIndex + 1] = vertList[v2];
+            Vertices[baseIndex + 2] = vertList[v1];
+
+            uint baseTriIndex;
+            InterlockedAdd(Counters[1], 3, baseTriIndex);
+            Triangles[baseTriIndex + 0] = baseIndex + 0;
+            Triangles[baseTriIndex + 1] = baseIndex + 1;
+            Triangles[baseTriIndex + 2] = baseIndex + 2;
+        }
+    }
+}
