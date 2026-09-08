@@ -25,7 +25,6 @@ namespace Chunks
             _mr.shadowCastingMode = ShadowCastingMode.TwoSided;
         }
 
-        /// <summary>挂载(缓存或新生成的)网格;换引用会自动重烘 MeshCollider。</summary>
         public void SetMesh(Mesh mesh)
         {
             _mf.sharedMesh = mesh;

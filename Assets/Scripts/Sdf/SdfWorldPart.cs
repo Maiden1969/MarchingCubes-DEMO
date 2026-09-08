@@ -9,6 +9,21 @@ namespace Sdf
         public bool isGlobal = false;
         public SdfEditOp editOp = SdfEditOp.Add;
 
+        [SerializeField] private NoiseParams noiseParams = new NoiseParams
+        {
+            noiseFunction = SdfNoiseFunction.Smooth,
+            warpFrequency = 0.04f,
+            warpAmplitude = 0f,
+            frequency = 0.1f,
+            displacement = 0f,
+            blockSize = 2,
+            octaves = 2,
+            seed = 0,
+        };
+
+        // 该形状的噪声扰动参数(Bake 时烘焙进平行数组)。默认幅度全 0 = 无扰动。
+        public NoiseParams NoiseParams => noiseParams;
+
         public abstract SdfShape Shape { get; }
     }
 }

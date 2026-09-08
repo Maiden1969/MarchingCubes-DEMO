@@ -3,11 +3,6 @@ using UnityEngine;
 
 namespace Nav
 {
-    /// <summary>
-    /// 每敌人一份的路径跟随组件:向 manager 取路径(唯一入口 TryGetPath),
-    /// 沿路点移动(加速度/转向/到达减速),并处理失败重试、卡死重寻与路径失效。
-    /// 只做路径消费者:图与 A* 全部在 CustomNavManager。
-    /// </summary>
     public class CustomNavAgent : MonoBehaviour
     {
         [Header("Movement")]
@@ -65,11 +60,9 @@ namespace Nav
             _destination = dest;
             if (needRepath) Repath(true);      // 新目标:无视节流立即重寻
         }
-
-        /// <summary>
+        
         /// 路径失效(如地形被挖、导航重建)。由 manager 的事件接线调用;
         /// 立刻允许重寻——敌人少时无所谓,敌人多时应由 manager 层错峰后调用。
-        /// </summary>
         public void InvalidatePath(Vector3Int chunkCoord)
         {
             if (!_hasTarget) return;

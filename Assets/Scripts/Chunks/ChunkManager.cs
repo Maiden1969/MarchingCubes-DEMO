@@ -7,7 +7,6 @@ using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
 using Unity.Mathematics;
-using UnityEditor;
 using UnityEngine.InputSystem;
 using Mesh = UnityEngine.Mesh;
 
@@ -62,15 +61,18 @@ namespace Chunks
             var isVisible = false;
 
             // 3×3×3 around the player is always loaded (feet must not fall through);
-            // everything else is distance + frustum culled.
+            // everything else is distance culled only — frustum culling disabled,
+            // Unity's renderer culling already skips off-frustum draw calls.
             if (math.abs(i) <= 1 && math.abs(j) <= 1 && math.abs(k) <= 1)
             {
                 isVisible = true;
             }
             else if (sqrDistance < SqrMaxDistance)
             {
-                Bounds chunkBounds = new Bounds(chunkPos, new Vector3(Size, Size, Size));
-                isVisible = TestPlanesAABB(FrustumPlanes, chunkBounds);
+                isVisible = true;
+                // 视锥检测已禁用(距离内全加载),保留原实现以备恢复:
+                // Bounds chunkBounds = new Bounds(chunkPos, new Vector3(Size, Size, Size));
+                // isVisible = TestPlanesAABB(FrustumPlanes, chunkBounds);
             }
 
             Results[index] = new ChunkVisibilityResult
@@ -80,17 +82,11 @@ namespace Chunks
             };
         }
     }
-
-    /// <summary>
-    /// Orchestrator for the DRG-style destructible terrain: streams chunks (pooled
-    /// GameObjects, Burst visibility culling), generates each chunk's SDF lattice on the
-    /// CPU, meshes it with the Marching Cubes compute shader and caches mesh + SDF per
-    /// chunk coordinate. Dirty tracking lives on the COORDINATE (not on the pooled
-    /// GameObject): dirty coords re-mesh and refresh the cache, clean coords reuse it.
-    /// </summary>
+    
     public class ChunkManager : MonoBehaviour
     {
-        [Header("Chunking")]
+        [Header("Chunking")] 
+        [SerializeField] private bool update = false;
         [SerializeField] private int chunkSize = 16;              // world units per chunk
         [SerializeField] private float maxDistance = 100f;
         [SerializeField] private int updateFrequency = 2;   // chunk visibility refresh interval (frames)
@@ -122,11 +118,9 @@ namespace Chunks
         private SdfWorld _sdfWorld;
         
         public static ChunkManager Instance { get; private set; }
-
-        /// <summary>某块的 SDF 场新建或被编辑时触发(导航等系统据此增量重建)。</summary>
+        
         public event Action<Vector3Int> SdfChanged;
-
-        /// <summary>格点间距(块边长 / (sdfResolution - 1))。外部系统按同一分解换算世界坐标。</summary>
+        
         public float VoxelSize => chunkSize / (float)_mcResolution;
         public float CellSize => chunkSize / (float)_mcResolution;
         public float HalfChunkSize => chunkSize * 0.5f;
@@ -134,6 +128,8 @@ namespace Chunks
         public int SdfResolution => sdfResolution;
         public int McResolution => _mcResolution;
         public int CellResolution => _mcResolution;
+        public float MaxDistance => maxDistance;
+        public int MaxChunkCountPerAxis => _maxChunkCountPerAxis;
         
         private void Awake()
         {
@@ -172,6 +168,7 @@ namespace Chunks
 
         private void Update()
         {
+            if (!update) return;
             if (_updateCounter >= updateFrequency)
             {
                 _updateCounter = 0;
@@ -185,7 +182,12 @@ namespace Chunks
             HandleCarveInput();
         }
 
-        // 左键点击 → 射线命中地形(generationLayer;MC 网格是单面的,需开背面命中)→ 挖球。
+        public void SetUpdate(bool state)
+        {
+            update = state;
+        }
+
+        // 左键点击挖球。
         private void HandleCarveInput()
         {
             if (Mouse.current == null || _playerCamera == null) return;
@@ -199,12 +201,7 @@ namespace Chunks
 
             if (hit) CarveAt(hitInfo.point, carveRadius);
         }
-
-        /// <summary>
-        /// 破坏入口:以 hit 为中心、radius 为半径挖球。受影响块 = 球包围盒覆盖的块闭区间;
-        /// 每块就地编辑场(缓存缺失则先用静态形状初始化并入缓存,保证洞跨块连续)并标脏。
-        /// 已加载的脏块在下一次 UpdateChunks 末尾重网格化(延迟 ≤ updateFrequency 帧)。
-        /// </summary>
+        
         public void CarveAt(Vector3 hit, float radius)
         {
             Vector3Int minCoord = WorldPosToChunkCoord(hit - Vector3.one * (3f * radius));
@@ -239,7 +236,7 @@ namespace Chunks
         private void PrepareChunkPool()
         {
             _chunkPool.Clear();
-            for (int i = 0; i < 250; i++)
+            for (int i = 0; i < 350; i++)
             {
                 _chunkPool.Enqueue(CreateChunk(i));
             }
@@ -283,8 +280,7 @@ namespace Chunks
                 _frustumPlanes[i] = temp[i];
             }
         }
-
-        /// <summary>破坏/编辑入口:标记坐标脏,该坐标下次取网格时重新生成并刷新缓存。</summary>
+        
         public void MarkChunkDirty(Vector3Int chunkCoord)
         {
             _dirtyChunks.Add(chunkCoord);
@@ -304,6 +300,7 @@ namespace Chunks
                     shapeTypes = _sdfWorld.ShapeTypes,
                     editOps = _sdfWorld.EditOps,
                     args = _sdfWorld.Args,
+                    noiseParams = _sdfWorld.NoiseParams,
                     values = field.values,
                     threadMinMax = field.threadMinMax,
                 };
@@ -328,28 +325,21 @@ namespace Chunks
             }
             return field;
         }
-
-        /// <summary>
-        /// 采样世界空间任意一点的 SDF 值:定位所在块并取其场(缓存缺失则创建并
-        /// 初始化),再委托场做三线性采样。负 = 实体。
-        /// </summary>
+        
+        /// 采样世界空间任意一点的 SDF 值
         public float Sample(Vector3 worldPos)
         {
             Vector3Int chunkCoord = WorldPosToChunkCoord(worldPos);
             return GetSdfField(chunkCoord).Sample(worldPos);
         }
-
-        /// <summary>
-        /// 生成整条管线:MC 计算着色器出网格 → 刷新缓存并挂到 chunk 上。
-        /// 无表面的块(纯空气)跳过 MC 与上传,直接给空网格。
-        /// </summary>
+        
         private void GenerateChunk(Vector3Int chunkCoord, Chunk chunk)
         {
             if (_marchingCubes == null) return;
 
             SdfField field = GetSdfField(chunkCoord);
 
-            // 无表面 → 跳过 dispatch,注意也不能调 BuildMesh(计数器里残留上一块的数值)。
+            // 无表面
             Vector3[] vertices = Array.Empty<Vector3>();
             int[] triangles = Array.Empty<int>();
             if (field.HasSurface)
@@ -381,7 +371,7 @@ namespace Chunks
             }
         }
 
-        // 脏坐标或缓存缺失 → 重新生成并更新缓存;否则直接复用缓存网格。
+        // 脏坐标或缓存缺失，重新生成并更新缓存，否则直接复用缓存网格。
         private void UpdateChunkMesh(Vector3Int chunkCoord, Chunk chunk)
         {
             bool dirty = _dirtyChunks.Remove(chunkCoord);
@@ -394,7 +384,7 @@ namespace Chunks
         }
 
         // 加载块到指定的块坐标
-        private void LoadChunk(Vector3Int chunkCoord)
+        public void LoadChunk(Vector3Int chunkCoord)
         {
             if (_activeChunks.ContainsKey(chunkCoord)) return;
 
@@ -420,7 +410,7 @@ namespace Chunks
         {
             Vector3 playerPos = _playerTransform ? _playerTransform.position : _playerCamera.transform.position;
             Vector3Int curChunkCoord = WorldPosToChunkCoord(playerPos);
-            UpdateFrustumPlanes();
+            UpdateFrustumPlanes();   
 
             int totalJobs = (2 * _maxChunkCountPerAxis + 1) * (2 * _maxChunkCountPerAxis + 1) * (2 * _maxChunkCountPerAxis + 1);
 
@@ -432,14 +422,14 @@ namespace Chunks
                     ChunkCountPerAxis = _maxChunkCountPerAxis,
                     PlayerPos = playerPos,
                     SqrMaxDistance = _sqrMaxDistance,
-                    FrustumPlanes = _frustumPlanes,
+                    FrustumPlanes = _frustumPlanes,   
                     Size = chunkSize,
                     Results = results
                 };
-
+            
                 JobHandle jobHandle = job.Schedule(totalJobs, 256);
                 jobHandle.Complete();
-
+            
                 foreach (var result in results)
                 {
                     if (result.IsVisible)

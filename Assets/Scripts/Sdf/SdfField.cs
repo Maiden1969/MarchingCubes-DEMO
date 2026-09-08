@@ -16,6 +16,8 @@ namespace Sdf
     // Capsule:     [top position(3个float), down position(3个float), radius]
     // HalfSphere:  [position(3个float), radius, normal(3个float)]
     // HalfCapsule: [top(3个float), down(3个float), radius, cutPoint(3个float), normal(3个float)]
+    // Cylinder:    [top(3个float), down(3个float), radius]
+    // HalfCylinder:[top(3个float), down(3个float), radius, cutPoint(3个float), normal(3个float)]
     // Floor:       [height]
     [BurstCompile]
     public struct SdfFieldEditJob : IJobParallelFor
@@ -26,11 +28,48 @@ namespace Sdf
         [ReadOnly] public NativeArray<SdfShapeType> shapeTypes;
         [ReadOnly] public NativeArray<SdfEditOp> editOps;
         [ReadOnly] public NativeArray<float> args;
+        [ReadOnly] public NativeArray<NoiseParams> noiseParams;
         public NativeArray<float> values;
         [NativeDisableParallelForRestriction] public NativeArray<float> threadMinMax;
         [NativeSetThreadIndex] private int m_ThreadIndex;
+        
+        private static float Fbm(float3 p, int seed, int octaves)
+        {
+            octaves = math.max(1, octaves);
+            float a = 0.5f, f = 1f, sum = 0f, norm = 0f;
+            float3 sp = p + seed * 13.37f;
+            for (int i = 0; i < octaves; i++) { sum += a * noise.snoise(sp * f); norm += a; a *= 0.5f; f *= 2f; }
+            return sum / norm;
+        }
+        
+        private static float3 Warp(float3 p, int seed, int octaves, float warpAmplitude)
+        {
+            return new float3(
+                Fbm(p + new float3(31.4f, 0, 0), seed, octaves),
+                Fbm(p + new float3(0, 62.8f, 0), seed, octaves),
+                Fbm(p + new float3(0, 0, 94.2f), seed, octaves)) * warpAmplitude;
+        }
 
-        public float Edit(float sdf1, float sdf2, SdfEditOp op)
+        // 最近邻值噪声:每 blockSize³ 一个恒定随机值,块间不插值，表面呈不规则立方砖块。
+        private static float BlockNoise(float3 p, int blockSize, int seed)
+        {
+            blockSize = math.max(1, blockSize);
+            int3 cell = (int3)math.floor(p / (float)blockSize);
+            uint h = math.hash((uint3)(cell + seed));
+            return (h * (1f / uint.MaxValue)) * 2f - 1f;
+        }
+
+        // 表面位移
+        private static float Displace(float sdf, float3 p, NoiseParams np)
+        {
+            if (np.displacement == 0f) return sdf;
+            float n = np.noiseFunction == SdfNoiseFunction.Block
+                ? BlockNoise(p, np.blockSize, np.seed)
+                : Fbm(p * np.frequency, np.seed, np.octaves);
+            return sdf - np.displacement * n;
+        }
+
+        private float Edit(float sdf1, float sdf2, SdfEditOp op)
         {
             switch (op)
             {
@@ -55,6 +94,49 @@ namespace Sdf
             return math.length(p - (top + t * AB)) - radius;
         }
 
+        private static float SphereSdf(float3 p, float3 center, float radius)
+        {
+            return math.distance(center, p) - radius;
+        }
+
+        private static float HalfSphereSdf(float3 p, float3 center, float radius, float3 normal)
+        {
+            return math.max(SphereSdf(p, center, radius), math.dot(p - center, normal));
+        }
+
+        private static float HalfCapsuleSdf(float3 p, float3 top, float3 down, float radius, float3 cutPoint, float3 normal)
+        {
+            return math.max(CapsuleSdf(p, top, down, radius), math.dot(p - cutPoint, normal));
+        }
+
+        private static float FloorSdf(float3 p, float height)
+        {
+            return p.y - height;
+        }
+
+        private static float CylinderSdf(float3 p, float3 top, float3 down, float radius)
+        {
+            float3 AB = down - top;
+            float len2 = math.dot(AB, AB);
+            if (len2 < 1e-8)
+            {
+                return math.length(p - top) - radius;
+            }
+            float3 axis = AB / math.sqrt(len2);
+            float3 center = (top + down) * 0.5f;
+            float halfLen = math.sqrt(len2) * 0.5f;
+            float3 rel = p - center;
+            float radial = math.length(rel - axis * math.dot(rel, axis)) - radius;
+            float axial = math.abs(math.dot(rel, axis)) - halfLen;
+            float2 q = new float2(radial, axial);
+            return math.length(math.max(q, 0f)) + math.min(math.max(q.x, q.y), 0f);
+        }
+
+        private static float HalfCylinderSdf(float3 p, float3 top, float3 down, float radius, float3 cutPoint, float3 normal)
+        {
+            return math.max(CylinderSdf(p, top, down, radius), math.dot(p - cutPoint, normal));
+        }
+
         public void Execute(int index)
         {
             int n2 = resolution * resolution;
@@ -72,14 +154,19 @@ namespace Sdf
             {
                 SdfShapeType shapeType = shapeTypes[i];
                 SdfEditOp editOp = editOps[i];
+                NoiseParams np = noiseParams[i];
                 
+                // 域扭曲
+                float3 q = np.warpAmplitude != 0f
+                    ? latticePos + Warp(latticePos * np.warpFrequency, np.seed, np.octaves, np.warpAmplitude)
+                    : latticePos;
+
                 switch (shapeType)
                 {
                     case SdfShapeType.Sphere:
                         float3 position = new float3(args[idx], args[idx + 1], args[idx + 2]);
                         float radiusSphere = args[idx + 3];
-                        float sdfSphere = math.distance(position, latticePos) - radiusSphere;
-                        d = Edit(d, sdfSphere, editOp);
+                        d = Edit(d, Displace(SphereSdf(q, position, radiusSphere), latticePos, np), editOp);
                         idx += 4;
                         break;
 
@@ -87,9 +174,7 @@ namespace Sdf
                         float3 centerHs = new float3(args[idx], args[idx + 1], args[idx + 2]);
                         float radiusHs = args[idx + 3];
                         float3 normalHs = new float3(args[idx + 4], args[idx + 5], args[idx + 6]);
-                        float sdfHalfSphere = math.max(math.distance(centerHs, latticePos) - radiusHs,
-                                                       math.dot(latticePos - centerHs, normalHs));
-                        d = Edit(d, sdfHalfSphere, editOp);
+                        d = Edit(d, Displace(HalfSphereSdf(q, centerHs, radiusHs, normalHs), latticePos, np), editOp);
                         idx += 7;
                         break;
 
@@ -97,7 +182,7 @@ namespace Sdf
                         float3 top = new float3(args[idx], args[idx + 1], args[idx + 2]);
                         float3 down = new float3(args[idx + 3], args[idx + 4], args[idx + 5]);
                         float radiusCapsule = args[idx + 6];
-                        d = Edit(d, CapsuleSdf(latticePos, top, down, radiusCapsule), editOp);
+                        d = Edit(d, Displace(CapsuleSdf(q, top, down, radiusCapsule), latticePos, np), editOp);
                         idx += 7;
                         break;
 
@@ -107,17 +192,32 @@ namespace Sdf
                         float radiusHc = args[idx + 6];
                         float3 cutPointHc = new float3(args[idx + 7], args[idx + 8], args[idx + 9]);
                         float3 normalHc = new float3(args[idx + 10], args[idx + 11], args[idx + 12]);
-                        float sdfHalfCapsule = math.max(CapsuleSdf(latticePos, topHc, downHc, radiusHc),
-                                                        math.dot(latticePos - cutPointHc, normalHc));
-                        d = Edit(d, sdfHalfCapsule, editOp);
+                        d = Edit(d, Displace(HalfCapsuleSdf(q, topHc, downHc, radiusHc, cutPointHc, normalHc), latticePos, np), editOp);
                         idx += 13;
                         break;
                     
                     case SdfShapeType.Floor:
                         float height = args[idx];
-                        float sdfFloor = latticePos.y - height;
-                        d = Edit(d, sdfFloor, editOp);
+                        d = Edit(d, Displace(FloorSdf(q, height), latticePos, np), editOp);
                         idx += 1;
+                        break;
+
+                    case SdfShapeType.Cylinder:
+                        float3 topCy = new float3(args[idx], args[idx + 1], args[idx + 2]);
+                        float3 downCy = new float3(args[idx + 3], args[idx + 4], args[idx + 5]);
+                        float radiusCy = args[idx + 6];
+                        d = Edit(d, Displace(CylinderSdf(q, topCy, downCy, radiusCy), latticePos, np), editOp);
+                        idx += 7;
+                        break;
+
+                    case SdfShapeType.HalfCylinder:
+                        float3 topHcy = new float3(args[idx], args[idx + 1], args[idx + 2]);
+                        float3 downHcy = new float3(args[idx + 3], args[idx + 4], args[idx + 5]);
+                        float radiusHcy = args[idx + 6];
+                        float3 cutPointHcy = new float3(args[idx + 7], args[idx + 8], args[idx + 9]);
+                        float3 normalHcy = new float3(args[idx + 10], args[idx + 11], args[idx + 12]);
+                        d = Edit(d, Displace(HalfCylinderSdf(q, topHcy, downHcy, radiusHcy, cutPointHcy, normalHcy), latticePos, np), editOp);
+                        idx += 13;
                         break;
                 }
             }
@@ -154,15 +254,14 @@ namespace Sdf
             threadMinMax = new NativeArray<float>(2 * MaxThreads, Allocator.Persistent);
             ResetThreadMinMax();
             float[] initialValues = new float[_resolution * _resolution * _resolution];
-            Array.Fill(initialValues, float.PositiveInfinity);
+            Array.Fill(initialValues, float.NegativeInfinity);
             values.CopyFrom(initialValues);
             Apply();
         }
         
         public void Apply()
         {
-            // 主线程合并各线程归约槽 → 全局 min/max(线性合并,~128 次迭代,纳秒级)。
-            // 存在负值且存在 ≥0 值 = 有等值面穿过(负 = 实体)。
+            // 合并各线程归约槽
             float min = float.PositiveInfinity, max = float.NegativeInfinity;
             for (int i = 0; i < threadMinMax.Length; i += 2)
             {
@@ -172,8 +271,7 @@ namespace Sdf
             _hasSurface = min < 0f && max >= 0f;
         }
 
-        // 归约槽重置:偶数槽 = +∞(min),奇数槽 = -∞(max)。每次调度编辑 job 前必须调用,
-        // 否则未参与本轮调度的线程槽会残留上一次的 min/max。
+        // 归约槽重置
         public void ResetThreadMinMax()
         {
             for (int i = 0; i < threadMinMax.Length; i++)
@@ -189,6 +287,7 @@ namespace Sdf
 
             using (NativeArray<SdfShapeType> shapeTypes = new (new [] { shape.Type }, Allocator.TempJob))
             using (NativeArray<SdfEditOp> editOps = new (new [] { editOp }, Allocator.TempJob))
+            using (NativeArray<NoiseParams> noiseParams = new (new [] { default(NoiseParams) }, Allocator.TempJob))   // CarveAt 单形状编辑:零噪声(挖掘球保持精确球面)
             using (NativeArray<float> args = new (argList.ToArray(), Allocator.TempJob))
             {
                 SdfFieldEditJob job = new()
@@ -199,6 +298,7 @@ namespace Sdf
                     shapeTypes = shapeTypes,
                     editOps = editOps,
                     args = args,
+                    noiseParams = noiseParams,
                     values = values,
                     threadMinMax = threadMinMax,
                 };
@@ -210,11 +310,7 @@ namespace Sdf
             Apply();
         }
 
-        /// <summary>
-        /// 在世界坐标采样该场的 SDF 值(三线性插值,负 = 实体)。场覆盖以
-        /// chunkCoord * chunkSize 为中心、边长 chunkSize 的立方体(边界含在内);
-        /// 点在场外时返回 float.PositiveInfinity,与场的基础值(+∞ = 空气)一致。
-        /// </summary>
+        // 三线性采样场
         public float Sample(Vector3 worldPos)
         {
             int cells = _resolution - 1;

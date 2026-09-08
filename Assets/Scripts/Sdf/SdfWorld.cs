@@ -11,11 +11,13 @@ namespace Sdf
 
         private NativeArray<SdfShapeType> _shapeTypes;
         private NativeArray<SdfEditOp> _editOps;
+        private NativeArray<NoiseParams> _noiseParams;
         private NativeArray<float> _args;
 
         public List<SdfShape> Shapes => _shapes;
         public NativeArray<SdfShapeType> ShapeTypes => _shapeTypes;
         public NativeArray<SdfEditOp> EditOps => _editOps;
+        public NativeArray<NoiseParams> NoiseParams => _noiseParams;
         public NativeArray<float> Args => _args;
         public static SdfWorld Instance;
 
@@ -50,9 +52,10 @@ namespace Sdf
             foreach (SdfWorldPart part in _parts)
                 _shapes.Add(part.Shape);
 
-            BakeJobParams(out SdfShapeType[] shapeTypes, out SdfEditOp[] editOps, out float[] args);
+            BakeJobParams(out SdfShapeType[] shapeTypes, out SdfEditOp[] editOps, out NoiseParams[] noiseParams, out float[] args);
             _shapeTypes = new NativeArray<SdfShapeType>(shapeTypes, Allocator.Persistent);
             _editOps = new NativeArray<SdfEditOp>(editOps, Allocator.Persistent);
+            _noiseParams = new NativeArray<NoiseParams>(noiseParams, Allocator.Persistent);
             _args = new NativeArray<float>(args, Allocator.Persistent);
         }
 
@@ -60,6 +63,7 @@ namespace Sdf
         {
             if (_shapeTypes.IsCreated) _shapeTypes.Dispose();
             if (_editOps.IsCreated) _editOps.Dispose();
+            if (_noiseParams.IsCreated) _noiseParams.Dispose();
             if (_args.IsCreated) _args.Dispose();
         }
 
@@ -69,16 +73,19 @@ namespace Sdf
         }
 
         /// <summary>
-        /// 把形状列表烘焙成 SdfFieldEditJob 消费的三组平行数组。
+        /// 把形状列表烘焙成 SdfFieldEditJob 消费的平行数组。
         /// args 布局(与 job 内游标步进一致):Sphere = [pos(3), radius];
         /// Capsule = [top(3), down(3), radius]; HalfSphere = [pos(3), radius, normal(3)];
         /// HalfCapsule = [top(3), down(3), radius, cutPoint(3), normal(3)]。
+        /// Cylinder = [top(3), down(3), radius];HalfCylinder = 同 HalfCapsule 布局。
+        /// noiseParams 每形状一条,与 shapeTypes/editOps 平行(不占 args 游标)。
         /// 扩展新形状 = 子类实现 Type/BakeArgs,再在 SdfFieldEditJob 的 switch 里加对应 case。
         /// </summary>
-        public void BakeJobParams(out SdfShapeType[] shapeTypes, out SdfEditOp[] editOps, out float[] args)
+        public void BakeJobParams(out SdfShapeType[] shapeTypes, out SdfEditOp[] editOps, out NoiseParams[] noiseParams, out float[] args)
         {
             shapeTypes = new SdfShapeType[_shapes.Count];
             editOps = new SdfEditOp[_shapes.Count];
+            noiseParams = new NoiseParams[_shapes.Count];
 
             var argList = new List<float>();
             for (int i = 0; i < _shapes.Count; i++)
@@ -86,6 +93,7 @@ namespace Sdf
                 SdfShape shape = _shapes[i];
                 shapeTypes[i] = shape.Type;
                 editOps[i] = _parts[i].editOp;
+                noiseParams[i] = _parts[i].NoiseParams;
                 shape.BakeArgs(argList);
             }
             args = argList.ToArray();

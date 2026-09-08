@@ -3,13 +3,9 @@ using UnityEngine.InputSystem;
 
 namespace Chunks
 {
-    /// <summary>
-    /// Minimal fly camera for testing (the sample scene has no movement script).
-    /// WASD + Space/Ctrl to move, mouse to look, Shift to sprint. Delete freely.
-    /// </summary>
     public class FlyCamera : MonoBehaviour
     {
-        [SerializeField] private float moveSpeed = 10f;
+        [SerializeField] private float moveSpeed = 20f;
         [SerializeField] private float lookSpeed = 2f;
 
         private float _pitch;

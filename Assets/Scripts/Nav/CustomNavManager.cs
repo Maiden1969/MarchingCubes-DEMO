@@ -2,8 +2,10 @@
 using System.Collections.Generic;
 using Chunks;
 using Sdf;
+using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
+using Unity.Mathematics;
 using UnityEngine;
 
 namespace Nav
@@ -76,6 +78,101 @@ namespace Nav
         public int cellIndex;
         public Vector3 position;
         public Vector3 normal;
+    }
+
+    public struct NavCellOut
+    {
+        public float3 pos;
+        public float3 normal;
+    }
+
+    /// <summary>
+    /// 块内导航格点行进:扫 cells³ 个格(与 SDF 格点分解整数精确一致,块内格
+    /// 只读本块格点值,相邻块共享格点平面 → 跨界无缝)。检出与等值面相交的格
+    /// (minCorner &lt; 0 && maxCorner &gt;= 0,负 = 实体;"单边带"规则保证等值面
+    /// 恰好压在某格点平面上时也只出一层节点),再把格中心沿法线投影到表面。
+    /// </summary>
+    [BurstCompile(FloatPrecision.Low, FloatMode.Fast)]
+    public struct NavSurfaceJob : IJobParallelFor
+    {
+        [ReadOnly] public int3 chunkCoord;
+        [ReadOnly] public float chunkSize;
+        [ReadOnly] public int resolution;          // 每轴格点数 = cells + 1
+        [ReadOnly] public NativeArray<float> values;
+        public NativeArray<NavCellOut> cellsOut;
+        public NativeArray<byte> flags;            // 1 = 表面格
+
+        private float V(int lx, int ly, int lz) =>
+            values[lz * resolution * resolution + ly * resolution + lx];
+
+        // 局部格点坐标三线性采样,越界钳制(边界格的梯度因此近似;跨界连续性
+        // 不受影响:投影位置用块内值计算,且采样坐标严格在块内)。
+        private float Trilinear(float3 p)
+        {
+            int cells = resolution - 1;
+            p = math.clamp(p, 0f, (float)cells);
+            int3 lo = (int3)math.floor(p);
+            int3 hi = math.min(lo + 1, cells);
+            float3 f = p - lo;
+
+            float v000 = V(lo.x, lo.y, lo.z);
+            float v100 = V(hi.x, lo.y, lo.z);
+            float v010 = V(lo.x, hi.y, lo.z);
+            float v110 = V(hi.x, hi.y, lo.z);
+            float v001 = V(lo.x, lo.y, hi.z);
+            float v101 = V(hi.x, lo.y, hi.z);
+            float v011 = V(lo.x, hi.y, hi.z);
+            float v111 = V(hi.x, hi.y, hi.z);
+
+            float x00 = math.lerp(v000, v100, f.x);
+            float x10 = math.lerp(v010, v110, f.x);
+            float x01 = math.lerp(v001, v101, f.x);
+            float x11 = math.lerp(v011, v111, f.x);
+            float y0 = math.lerp(x00, x10, f.y);
+            float y1 = math.lerp(x01, x11, f.y);
+            return math.lerp(y0, y1, f.z);
+        }
+
+        public void Execute(int index)
+        {
+            int cells = resolution - 1;
+            int n2 = cells * cells;
+            int z = index / n2;
+            int y = (index - z * n2) / cells;
+            int x = index - z * n2 - y * cells;
+
+            float minV = float.MaxValue, maxV = float.MinValue;
+            for (int dz = 0; dz <= 1; dz++)
+            for (int dy = 0; dy <= 1; dy++)
+            for (int dx = 0; dx <= 1; dx++)
+            {
+                float v = V(x + dx, y + dy, z + dz);
+                minV = math.min(minV, v);
+                maxV = math.max(maxV, v);
+            }
+
+            if (!(minV < 0f && maxV >= 0f))
+            {
+                flags[index] = 0;
+                return;
+            }
+
+            flags[index] = 1;
+            float voxelSize = chunkSize / cells;
+            float halfSize = chunkSize / 2;
+
+            float3 center = new float3(x + 0.5f, y + 0.5f, z + 0.5f);
+            float d = Trilinear(center);
+            float3 grad = new float3(
+                Trilinear(center + new float3(1f, 0f, 0f)) - Trilinear(center - new float3(1f, 0f, 0f)),
+                Trilinear(center + new float3(0f, 1f, 0f)) - Trilinear(center - new float3(0f, 1f, 0f)),
+                Trilinear(center + new float3(0f, 0f, 1f)) - Trilinear(center - new float3(0f, 0f, 1f)));
+            float len = math.length(grad);
+            float3 n = len > 1e-6f ? grad / len : new float3(0f, 1f, 0f);
+
+            float3 world = (float3)(chunkCoord * cells) * voxelSize + center * voxelSize - halfSize;
+            cellsOut[index] = new NavCellOut { pos = world - n * d, normal = n };
+        }
     }
     
     public class CustomNavManager : MonoBehaviour
