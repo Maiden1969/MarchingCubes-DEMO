@@ -40,9 +40,9 @@ namespace Nav
 
         public int Pop()
         {
-            var top = _heap[0];
+            var top = _heap[1];
             var size = _heap.Count - 1;
-            (_heap[0], _heap[size]) = (_heap[size], _heap[0]);
+            (_heap[1], _heap[size]) = (_heap[size], _heap[1]);
             _heap.RemoveAt(size);
             BubbleDown(1);
             return top.element;
@@ -354,7 +354,6 @@ namespace Nav
 
             return false;
         }
-
         
         // A* 寻路
         public bool FindPath(Vector3 from, Vector3 to, List<Vector3> path)
@@ -441,6 +440,7 @@ namespace Nav
 
         private void OnDrawGizmos()
         {
+            if (!showNodes) return;
             Gizmos.color = new Color(0.2f, 0.8f, 1f, 0.5f);
             Vector3[] lines = new Vector3[_nodes.Count * 2];
             for (int i = 0; i < _nodes.Count * 2; i += 2)

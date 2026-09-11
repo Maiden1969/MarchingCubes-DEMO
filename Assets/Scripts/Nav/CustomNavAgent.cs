@@ -148,7 +148,7 @@ namespace Nav
 
         // ---------------------------------------------------------- 兜底
 
-        // 卡死检测:有路径但几乎无进展 → 强制重寻(挖洞制造的死路靠这个兜底)
+        // 卡死检测:有路径但几乎无进展 → 强制重寻
         private void UpdateStuck()
         {
             float moved = (transform.position - _lastProgressPos).magnitude;
@@ -168,7 +168,7 @@ namespace Nav
             }
         }
 
-        // 无路径时按 repathInterval 周期重试(寻路失败/导航覆盖未就绪的兜底)
+        // 无路径时按 repathInterval 周期重试
         private void UpdateRepath()
         {
             if (!_hasTarget || _arrived) return;

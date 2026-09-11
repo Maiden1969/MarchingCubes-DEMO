@@ -7,7 +7,6 @@ using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
 using Unity.Mathematics;
-using UnityEngine.InputSystem;
 using Mesh = UnityEngine.Mesh;
 
 namespace Chunks
@@ -97,9 +96,6 @@ namespace Chunks
         [SerializeField] private Material material;
         [SerializeField] private LayerMask generationLayer;
 
-        [Header("Carve")]
-        [SerializeField] private float carveRadius = 1.5f;
-
         [Header("Cache")]
         [SerializeField] private int cacheCapacity = 2000;   // LRU 缓存条目上限
 
@@ -132,6 +128,7 @@ namespace Chunks
         public int CellResolution => _mcResolution;
         public float MaxDistance => maxDistance;
         public int MaxChunkCountPerAxis => _maxChunkCountPerAxis;
+        public LayerMask GenerationLayer => generationLayer;
         
         private void Awake()
         {
@@ -180,8 +177,6 @@ namespace Chunks
             {
                 _updateCounter++;
             }
-
-            HandleCarveInput();
         }
 
         public void SetUpdate(bool state)
@@ -189,21 +184,6 @@ namespace Chunks
             update = state;
         }
 
-        // 左键点击挖球。
-        private void HandleCarveInput()
-        {
-            if (Mouse.current == null || _playerCamera == null) return;
-            if (!Mouse.current.leftButton.wasPressedThisFrame) return;
-
-            Ray ray = _playerCamera.ScreenPointToRay(Mouse.current.position.ReadValue());
-            bool backfaces = Physics.queriesHitBackfaces;
-            Physics.queriesHitBackfaces = true;
-            bool hit = Physics.Raycast(ray, out RaycastHit hitInfo, maxDistance);
-            Physics.queriesHitBackfaces = backfaces;
-
-            if (hit) CarveAt(hitInfo.point, carveRadius);
-        }
-        
         public void CarveAt(Vector3 hit, float radius)
         {
             Vector3Int minCoord = WorldPosToChunkCoord(hit - Vector3.one * (3f * radius));
