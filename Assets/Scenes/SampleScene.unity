@@ -23,7 +23,7 @@ RenderSettings:
   m_AmbientSkyColor: {r: 0.212, g: 0.227, b: 0.259, a: 1}
   m_AmbientEquatorColor: {r: 0.114, g: 0.125, b: 0.133, a: 1}
   m_AmbientGroundColor: {r: 0.047, g: 0.043, b: 0.035, a: 1}
-  m_AmbientIntensity: 0.542
+  m_AmbientIntensity: 0.803
   m_AmbientMode: 0
   m_SubtractiveShadowColor: {r: 0.42, g: 0.478, b: 0.627, a: 1}
   m_SkyboxMaterial: {fileID: 10304, guid: 0000000000000000f000000000000000, type: 0}
@@ -523,6 +523,18 @@ PrefabInstance:
       propertyPath: radius
       value: 18.01
       objectReference: {fileID: 0}
+    - target: {fileID: 1258778895416814662, guid: b0e618861b3ebef47b383c3e60440fe7, type: 3}
+      propertyPath: noiseParams.octaves
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 1258778895416814662, guid: b0e618861b3ebef47b383c3e60440fe7, type: 3}
+      propertyPath: noiseParams.frequency
+      value: 0.02
+      objectReference: {fileID: 0}
+    - target: {fileID: 1258778895416814662, guid: b0e618861b3ebef47b383c3e60440fe7, type: 3}
+      propertyPath: noiseParams.displacement
+      value: 1
+      objectReference: {fileID: 0}
     - target: {fileID: 4526132179333186741, guid: b0e618861b3ebef47b383c3e60440fe7, type: 3}
       propertyPath: m_Name
       value: SdfCapsule
@@ -938,7 +950,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 1389117502696781781, guid: aab273fd9a9541240961d255004bf725, type: 3}
       propertyPath: noiseParams.displacement
-      value: 6
+      value: 7
       objectReference: {fileID: 0}
     - target: {fileID: 1389117502696781781, guid: aab273fd9a9541240961d255004bf725, type: 3}
       propertyPath: noiseParams.noiseFunction
@@ -946,7 +958,11 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 1389117502696781781, guid: aab273fd9a9541240961d255004bf725, type: 3}
       propertyPath: noiseParams.warpAmplitude
-      value: 1.5
+      value: 2
+      objectReference: {fileID: 0}
+    - target: {fileID: 1389117502696781781, guid: aab273fd9a9541240961d255004bf725, type: 3}
+      propertyPath: noiseParams.warpFrequency
+      value: 0.03
       objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects: []
@@ -997,7 +1013,8 @@ MonoBehaviour:
   generationLayer:
     serializedVersion: 2
     m_Bits: 64
-  carveRadius: 4
+  carveRadius: 6
+  cacheCapacity: 8000
 --- !u!4 &1637699535
 Transform:
   m_ObjectHideFlags: 0
@@ -1086,8 +1103,8 @@ Light:
   serializedVersion: 13
   m_Type: 0
   m_Color: {r: 0.9934766, g: 1, b: 0.8660377, a: 1}
-  m_Intensity: 3.5
-  m_Range: 30
+  m_Intensity: 10
+  m_Range: 60
   m_SpotAngle: 80
   m_InnerSpotAngle: 50
   m_CookieSize2D: {x: 0.5, y: 0.5}
@@ -1128,7 +1145,7 @@ Light:
   m_Lightmapping: 4
   m_LightShadowCasterMode: 0
   m_AreaSize: {x: 1, y: 1}
-  m_BounceIntensity: 1
+  m_BounceIntensity: 3
   m_ColorTemperature: 6570
   m_UseColorTemperature: 0
   m_BoundingSphereOverride: {x: 0, y: 0, z: 0, w: 0}
@@ -1178,7 +1195,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 1930006624300560324, guid: d1c38f553ac9d5b44bcfbabcfe48c121, type: 3}
       propertyPath: noiseParams.displacement
-      value: 1.5
+      value: 3
       objectReference: {fileID: 0}
     - target: {fileID: 1930006624300560324, guid: d1c38f553ac9d5b44bcfbabcfe48c121, type: 3}
       propertyPath: noiseParams.noiseFunction

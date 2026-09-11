@@ -70,7 +70,7 @@ namespace Chunks
             else if (sqrDistance < SqrMaxDistance)
             {
                 isVisible = true;
-                // 视锥检测已禁用(距离内全加载),保留原实现以备恢复:
+                // 视锥检测禁用
                 // Bounds chunkBounds = new Bounds(chunkPos, new Vector3(Size, Size, Size));
                 // isVisible = TestPlanesAABB(FrustumPlanes, chunkBounds);
             }
@@ -86,7 +86,7 @@ namespace Chunks
     public class ChunkManager : MonoBehaviour
     {
         [Header("Chunking")] 
-        [SerializeField] private bool update = false;
+        [SerializeField] private bool update;
         [SerializeField] private int chunkSize = 16;              // world units per chunk
         [SerializeField] private float maxDistance = 100f;
         [SerializeField] private int updateFrequency = 2;   // chunk visibility refresh interval (frames)
@@ -100,12 +100,14 @@ namespace Chunks
         [Header("Carve")]
         [SerializeField] private float carveRadius = 1.5f;
 
+        [Header("Cache")]
+        [SerializeField] private int cacheCapacity = 2000;   // LRU 缓存条目上限
+
         private readonly Dictionary<Vector3Int, Chunk> _activeChunks = new ();
         private readonly Queue<Chunk> _chunkPool = new ();
         private readonly HashSet<Vector3Int> _visibleChunks = new ();
         private readonly List<Vector3Int> _chunksToUnLoad = new ();
         private readonly HashSet<Vector3Int> _dirtyChunks = new ();
-
         private NativeArray<Plane> _frustumPlanes;
         private ChunkCache _cache;
         private MarchingCubes _marchingCubes;
@@ -144,7 +146,7 @@ namespace Chunks
             sdfResolution = Mathf.Max(2, sdfResolution);
             _mcResolution = sdfResolution - 1;
 
-            _cache = new ChunkCache();
+            _cache = new ChunkCache { Capacity = cacheCapacity };
             _sqrMaxDistance = maxDistance * maxDistance;
             _maxChunkCountPerAxis = Mathf.CeilToInt(maxDistance / chunkSize);
             if (computeShader != null)
@@ -218,6 +220,9 @@ namespace Chunks
                 MarkChunkDirty(coord);
                 SdfChanged?.Invoke(coord);
             }
+
+            // GetSdfField 可能顺带为非活动块创建了场,裁一次压回容量。
+            _cache.Trim(cacheCapacity, _activeChunks.Keys);
         }
 
         private Chunk CreateChunk(int id = 0)
@@ -286,30 +291,15 @@ namespace Chunks
             _dirtyChunks.Add(chunkCoord);
         }
         
-        // 初始化某个块的SDF场
+        // 初始化某个块的SDF场(稠密烘焙 → 稀疏砖化,草稿数组用后即弃)
         public SdfField InitializeSdfField(Vector3Int chunkCoord)
         {
             var field = new SdfField(sdfResolution, math.int3(chunkCoord.x, chunkCoord.y, chunkCoord.z), chunkSize);
             if (_sdfWorld)
             {
-                SdfFieldEditJob editJob = new()
-                {
-                    chunkCoord = field.ChunkCoord,
-                    chunkSize = field.ChunkSize,
-                    resolution = sdfResolution,
-                    shapeTypes = _sdfWorld.ShapeTypes,
-                    editOps = _sdfWorld.EditOps,
-                    args = _sdfWorld.Args,
-                    noiseParams = _sdfWorld.NoiseParams,
-                    values = field.values,
-                    threadMinMax = field.threadMinMax,
-                };
-
-                field.ResetThreadMinMax();
-                editJob.Schedule(sdfResolution * sdfResolution * sdfResolution, 256).Complete();
-
-                field.Apply();
+                field.Bake(_sdfWorld.ShapeTypes, _sdfWorld.EditOps, _sdfWorld.Args, _sdfWorld.NoiseParams);
             }
+
             _cache.AddSdfToCache(chunkCoord, field);
             SdfChanged?.Invoke(chunkCoord);
 
@@ -344,7 +334,7 @@ namespace Chunks
             int[] triangles = Array.Empty<int>();
             if (field.HasSurface)
             {
-                _marchingCubes.Dispatch(field.values);
+                _marchingCubes.Dispatch(field.BrickData, field.BrickIndirection, field.BricksPerAxis);
                 _marchingCubes.BuildMesh(out vertices, out triangles);
             }
             
@@ -456,6 +446,9 @@ namespace Chunks
                 if (_activeChunks.TryGetValue(coord, out Chunk chunk))
                     GenerateChunk(coord, chunk);
             _dirtyChunks.RemoveWhere(coord => _activeChunks.ContainsKey(coord));
+
+            // 逐出最久未用的非活动块,把缓存压到容量内
+            _cache.Trim(cacheCapacity, _activeChunks.Keys);
         }
         
         private void OnDestroy()

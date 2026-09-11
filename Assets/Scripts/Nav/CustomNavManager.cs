@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using Chunks;
+using DS;
 using Sdf;
 using Unity.Burst;
 using Unity.Collections;
@@ -85,25 +86,42 @@ namespace Nav
         public float3 pos;
         public float3 normal;
     }
-
-    /// <summary>
+    
     /// 块内导航格点行进:扫 cells³ 个格(与 SDF 格点分解整数精确一致,块内格
     /// 只读本块格点值,相邻块共享格点平面 → 跨界无缝)。检出与等值面相交的格
     /// (minCorner &lt; 0 && maxCorner &gt;= 0,负 = 实体;"单边带"规则保证等值面
     /// 恰好压在某格点平面上时也只出一层节点),再把格中心沿法线投影到表面。
-    /// </summary>
+    /// 场为稀疏砖存储:缺砖格无表面直接跳过;表面格的梯度 stencil(±1 格)
+    /// 由 halo(4 格)保证落在落盘砖内,值精确。
     [BurstCompile(FloatPrecision.Low, FloatMode.Fast)]
     public struct NavSurfaceJob : IJobParallelFor
     {
         [ReadOnly] public int3 chunkCoord;
         [ReadOnly] public float chunkSize;
         [ReadOnly] public int resolution;          // 每轴格点数 = cells + 1
-        [ReadOnly] public NativeArray<float> values;
+        [ReadOnly] public NativeArray<uint> indirection;
+        [ReadOnly] public NativeArray<half> brickData;
+        [ReadOnly] public int bricksPerAxis;
         public NativeArray<NavCellOut> cellsOut;
         public NativeArray<byte> flags;            // 1 = 表面格
 
-        private float V(int lx, int ly, int lz) =>
-            values[lz * resolution * resolution + ly * resolution + lx];
+        // 格点值:砖内直接取;缺砖按槽内符号默认深值(±MaxValue,避免 lerp 出 NaN;
+        // 缺砖格会提前跳过,此分支仅为安全兜底)。
+        private float V(int lx, int ly, int lz)
+        {
+            uint id = indirection[BrickGrid.SlotOf(lx, ly, lz, bricksPerAxis)];
+            if (id >= BrickGrid.AbsentSolid)
+                return id == BrickGrid.AbsentAir ? float.MaxValue : float.MinValue;
+            int bx = math.min(lx >> 3, bricksPerAxis - 1);
+            int by = math.min(ly >> 3, bricksPerAxis - 1);
+            int bz = math.min(lz >> 3, bricksPerAxis - 1);
+            int ox = lx - bx * BrickGrid.BrickSize;
+            int oy = ly - by * BrickGrid.BrickSize;
+            int oz = lz - bz * BrickGrid.BrickSize;
+            int bid = (int)id;
+            return brickData[bid * BrickGrid.BrickValueCount + ox + oy * BrickGrid.BrickValuesPerAxis
+                + oz * BrickGrid.BrickValuesPerAxis * BrickGrid.BrickValuesPerAxis];
+        }
 
         // 局部格点坐标三线性采样,越界钳制(边界格的梯度因此近似;跨界连续性
         // 不受影响:投影位置用块内值计算,且采样坐标严格在块内)。
@@ -140,6 +158,14 @@ namespace Nav
             int z = index / n2;
             int y = (index - z * n2) / cells;
             int x = index - z * n2 - y * cells;
+
+            // 缺砖格: 无表面,直接跳过(表面格必在其所在砖内)。
+            uint cellBrick = indirection[(x >> 3) + bricksPerAxis * ((y >> 3) + bricksPerAxis * (z >> 3))];
+            if (cellBrick >= BrickGrid.AbsentSolid)
+            {
+                flags[index] = 0;
+                return;
+            }
 
             float minV = float.MaxValue, maxV = float.MinValue;
             for (int dz = 0; dz <= 1; dz++)
@@ -272,7 +298,9 @@ namespace Nav
                     chunkCoord = field.ChunkCoord,
                     chunkSize = field.ChunkSize,
                     resolution = field.Resolution,
-                    values = field.values,
+                    indirection = field.BrickIndirection,
+                    brickData = field.BrickData,
+                    bricksPerAxis = field.BricksPerAxis,
                     cellsOut = outs,
                     flags = flags,
                 };

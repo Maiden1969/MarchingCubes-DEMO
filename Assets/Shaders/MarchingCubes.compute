@@ -4,19 +4,17 @@ cbuffer MarchingCubeParams
 {
     float size;
     uint resolution;
-    uint res;
     uint maxVertices;
+    uint bricksPerAxis;
 }
 
-// SDF 格点直传为 StructuredBuffer(布局与 CPU values 一致:z*res*res + y*res + x,
-// res = 每轴格点数 = cells + 1)。等价于旧版点采样 texel,但省掉了每块一张 Texture3D
-// 和 uv 换算——CPU 的 values 数组是唯一真值,每次 dispatch 由 C# 上传到 scratch buffer。
-StructuredBuffer<float> SDF_VALUES;
+// 稀疏砖存储(BrickMap): 每块 32³ 格切成 4×4×4 个 8³ 体素的砖。
+// BRICK_INDIRECTION[bx + bpa*(by + bpa*bz)] = 紧凑砖 ID(0..N-1);
+// >= 0xFFFFFFFE = 缺砖(砖内无表面,全实体/全空气)→ 格子直接跳过。
+// BRICK_DATA 砖池布局: brickID*729 + lz*81 + ly*9 + lx(local 角点 0..8)。
+StructuredBuffer<uint> BRICK_INDIRECTION;
+StructuredBuffer<float> BRICK_DATA;
 
-// MC tables come from C# (CubicMethod/McTables.cs) as structured buffers — dynamic
-// indexing of global static const arrays cannot be mapped to cs_5_0 by D3DCompiler
-// ("cannot map expression to cs_5_0 instruction set"). Tables.compute is kept on disk
-// as the reference copy of the data, it is no longer included.
 StructuredBuffer<uint> edgeTable;
 StructuredBuffer<int> triTable;
 
@@ -43,9 +41,12 @@ static const uint LoopTable0[4 ] = {0, 1, 1, 0 };
 static const uint LoopTable1[12] = { 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3 };
 static const uint LoopTable2[12] = { 1, 2, 3, 0 ,5, 6, 7, 4, 4, 5, 6, 7 };
 
-// 4x4x4 = 64 threads/group: 8x8x8 (512) pushed per-thread register usage past D3D11's
-// recommended 16384 total (warning X4714 — vertList's dynamic indexing costs ~36 x# registers
-// per thread). Cells are independent, so the smaller group only improves occupancy.
+// 砖几何(与DS/BrickGrid.cs 的常量一致)
+static const uint kBrickSize = 8;                 // 砖宽(体素)
+static const uint kBrickValues = 9;               // 每轴角点数 = kBrickSize + 1
+static const uint kBrickValueCount = 729;         // 9³
+
+
 [numthreads(4,4,4)]
 void MarchingCubes (uint3 id : SV_DispatchThreadID)
 {
@@ -54,6 +55,11 @@ void MarchingCubes (uint3 id : SV_DispatchThreadID)
     uint k = id.z;
 
     if (i >= resolution || j >= resolution || k >= resolution) return;
+
+    // 所在砖: 缺砖 = 砖内无表面,无需发射三角形。halo 砖无表面格,state 恒 0/255,
+    // 走下面的 edgeTable[state] == 0 提前返回(与缺砖跳过一致)。
+    uint brickID = BRICK_INDIRECTION[(i >> 3) + bricksPerAxis * ((j >> 3) + bricksPerAxis * (k >> 3))];
+    if (brickID >= 0xFFFFFFFEu) return;
 
     float voxel_size = size / float(resolution);
     uint state = 0;
@@ -71,8 +77,11 @@ void MarchingCubes (uint3 id : SV_DispatchThreadID)
                 -(size / 2.0) + (k + LoopTable0[m&3]) * voxel_size
                 );
 
-        uint3 corner = uint3(i + ((m/4)&1), j + 1 - ((m/2)&1), k + LoopTable0[m&3]);
-        values[m] = SDF_VALUES[corner.z * res * res + corner.y * res + corner.x];
+        // 角的砖局部坐标 0..8(角 x = i+1 ≤ 32 时仍在同一砖内: 32 & 7 = 0 但砖取 i>>3,
+        // i ≤ 31 故局部 = (i&7)+1 ≤ 8,不会跨界读邻砖)。
+        uint3 corner = uint3((i & 7) + ((m/4)&1), (j & 7) + 1 - ((m/2)&1), (k & 7) + LoopTable0[m&3]);
+        values[m] = BRICK_DATA[brickID * kBrickValueCount +
+                               corner.z * kBrickValues * kBrickValues + corner.y * kBrickValues + corner.x];
 
         if (values[m] < 0.0)
             state |= 1 << m;
