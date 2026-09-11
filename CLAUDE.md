@@ -77,6 +77,7 @@ Self-built navmesh for DRG-style all-terrain walkers (spiders walk walls/ceiling
 - Registry: `_chunkNodes` (chunk coord → `int[cellCount]` node-index array) + pooled `_nodes` list + `_freeNodes` stack. **Adjacency is implicit** (26-neighbor cell-key lookups in A*; no edges stored) → chunk rebuilds reconnect automatically.
 - Incremental: subscribes to `ChunkManager.SdfChanged` (fired by `InitializeSdfField` and `CarveAt` only — `GenerateChunk` only reads the field) and rebuilds **synchronously** in the handler.
 - A*: **1-indexed binary heap with a sentinel at index 0** — `Pop()` must read `_heap[1]`; the original Pop read `_heap[0]` and returned the sentinel (element 0) on every pop, so the first real pathfinding threw `KeyNotFoundException: key '0'` in `g[cur]` (fixed 2026-09-11, heap unit-tested in the smoke). Decrease-key is lazy (duplicate pushes + closed-set skip). Euclidean weights/heuristic. LOS smoothing: `Los()` is an empty stub — NOT implemented.
+- **Agent repath waypoint skip (2026-09-11)**: `Repath` no longer blindly starts at path[1] — it advances `_curPathIndex` while the agent has already passed the perpendicular plane of the waypoint (`Dot(Wk+1 - Wk, P - Wk) >= 0`), skipping behind/duplicate waypoints (the snapped start node is L1-closest, often the just-passed node behind the agent; following it caused a visible 折返跑). The final waypoint is never skipped.
 - Nav coverage = chunks that have been rebuilt via `SdfChanged` (init + carve), not the whole ChunkCache.
 
 ## Known future work (not implemented)

@@ -97,7 +97,17 @@ namespace Nav
                 Arrive();                      // 已到达
                 return;
             }
-            _curPathIndex = 1;                 // path[0] 是起点吸附点,跳过
+
+            // 跳过身后/已越过的路点:
+            _curPathIndex = 1;
+            Vector3 pos = transform.position;
+            while (_curPathIndex < _path.Count - 1)
+            {
+                Vector3 wk = _path[_curPathIndex];
+                Vector3 wk1 = _path[_curPathIndex + 1];
+                if (Vector3.Dot(wk1 - wk, pos - wk) >= 0f) _curPathIndex++;
+                else break;
+            }
             _arrived = false;
         }
 

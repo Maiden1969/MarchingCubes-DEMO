@@ -450,7 +450,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::Chunks.FlyCamera
   moveSpeed: 10
   lookSpeed: 2
-  carveRadius: 6
+  carveRadius: 4
   navAgent: {fileID: 944663249}
 --- !u!1 &427627479
 GameObject:
