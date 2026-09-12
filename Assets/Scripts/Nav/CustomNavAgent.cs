@@ -78,10 +78,12 @@ namespace Nav
             return _manager.FindPath(from, to, _path);
         }
 
+        // 重寻路
         private void Repath(bool ignoreCooldown)
         {
             if (!_manager || (!ignoreCooldown && _repathTimer > 0f)) return;
             _repathTimer = repathInterval;
+            Vector3 moveDir = _curVelocity;      // 清零前捕获运动方向,供跳过守卫使用
             _curVelocity = Vector3.zero;
             _stuckTimer = 0f;
             _lastProgressPos = transform.position;
@@ -98,17 +100,29 @@ namespace Nav
                 return;
             }
 
-            // 跳过身后/已越过的路点:
+            // 跳过身后/已越过的路点(path[0] 是起点吸附点,固定跳过)
             _curPathIndex = 1;
+            AdvancePastWaypoints(moveDir);
+            _arrived = false;
+        }
+
+        /// 推进 _curPathIndex 越过 agent 已经过掉的路点。
+        /// "已越过" = 过了该路点沿下一段方向的垂直平面,且该路点不在当前运动方向前方。
+        /// 第二个条件是守卫:链折痕处(折痕/碗沿/接触带,下一段往回折 >90°)垂直平面测试
+        /// 会把还没到的前方路点误判成已越过,反而跳过前方、锚到身后路点(折返跑)。
+        /// moveDir 为 0(起步/急停)时退化为纯平面测试。
+        private void AdvancePastWaypoints(Vector3 moveDir)
+        {
             Vector3 pos = transform.position;
             while (_curPathIndex < _path.Count - 1)
             {
                 Vector3 wk = _path[_curPathIndex];
                 Vector3 wk1 = _path[_curPathIndex + 1];
-                if (Vector3.Dot(wk1 - wk, pos - wk) >= 0f) _curPathIndex++;
+                bool pastPlane = Vector3.Dot(wk1 - wk, pos - wk) >= 0f;
+                bool aheadOfMotion = Vector3.Dot(wk - pos, moveDir) > 0f;
+                if (pastPlane && !aheadOfMotion) _curPathIndex++;
                 else break;
             }
-            _arrived = false;
         }
 
         // ---------------------------------------------------------- 路径跟随
@@ -117,6 +131,11 @@ namespace Nav
         {
             if (!_hasTarget || _arrived) return;
             if (_curPathIndex >= _path.Count) return;   // 无路径:待机(等 UpdateRepath 重试)
+
+            // 每帧先跳过已越过的路点:高速/掉帧(如挖坑时 MeshCollider 重烘焙卡顿)
+            // 一帧跨过多个路点、或陡坡压缩链(相邻节点间距 < waypointRadius)时,到达
+            // 判定只加 1 会让下一帧回头追身后的路点(折返跑),这里一次推进到位。
+            AdvancePastWaypoints(_curVelocity);
 
             Vector3 waypoint = _path[_curPathIndex];
             bool isLast = _curPathIndex == _path.Count - 1;

@@ -203,9 +203,12 @@ namespace Nav
     
     public class CustomNavManager : MonoBehaviour
     {
-        [Header("Nav")] 
+        [Header("Nav")]
         public int snapRadius = 5;
-        [Header("Debug")] 
+        [Header("Path")]
+        public bool smoothPath = true;       // 寻路后做 LOS 拉绳平滑
+        public float losTolerance = 1f;      // 平滑线段允许偏离表面的最大 |SDF|(世界单位 ≈ 体素)
+        [Header("Debug")]
         public bool showNodes;
         public static CustomNavManager Instance;
         private ChunkManager _chunkManager;
@@ -388,6 +391,7 @@ namespace Nav
                     for (int n = target; n != -1; n = parent[n])
                         path.Add(_nodes[n].position);
                     path.Reverse();
+                    if (smoothPath) Los(path);   // 拉绳平滑:压缩网格链锯齿
                     return true;
                 }
 
@@ -425,17 +429,48 @@ namespace Nav
             return false;
         }
 
+        /// 贪心拉绳 LOS 平滑:从当前锚点跳到"最远可见"的路点,压缩 A* 网格链的锯齿。
+        /// 可见 = 弦线上逐点 SDF 采样保持在表面容差带内(|f| ≤ losTolerance):
+        /// 既不允许穿进实体(f < -tol,凸面弦线入土),也不允许悬空(f > tol,凹面弦线
+        /// 腾空)——DRG 型 agent 贴地行走,两者都会让路径脱离地表。
+        /// 采样走 TrySample:导航覆盖块可能已被缓存逐出,缺场时保守视为不可见,
+        /// 避免隐式建场触发 SdfChanged → 导航重建 → agent 失效(寻路栈内重入)。
         private void Los(List<Vector3> path)
         {
-            int len = path.Count;
-            List<Vector3> newPath = new List<Vector3>();
-            for (int i = 0; i < len; i++)
+            if (path.Count <= 2) return;
+
+            var smoothed = new List<Vector3>(path.Count) { path[0] };
+            int anchor = 0;
+            while (anchor < path.Count - 1)
             {
-                for (int j = len - 1; j > i; j--)
+                int furthest = anchor + 1;
+                for (int j = path.Count - 1; j > anchor; j--)
                 {
-                    
+                    if (HasLos(path[anchor], path[j]))
+                    {
+                        furthest = j;
+                        break;
+                    }
                 }
+                smoothed.Add(path[furthest]);
+                anchor = furthest;
             }
+            path.Clear();
+            path.AddRange(smoothed);
+        }
+
+        // a、b 两端点都在表面上,只查内部采样点;首个越界点即失败(早退)。
+        private bool HasLos(Vector3 a, Vector3 b)
+        {
+            float dist = Vector3.Distance(a, b);
+            int steps = Mathf.FloorToInt(dist / _chunkManager.CellSize);
+            for (int i = 1; i < steps; i++)
+            {
+                Vector3 p = Vector3.Lerp(a, b, (float)i / steps);
+                if (!_chunkManager.TrySample(p, out float f)) return false;
+                if (Mathf.Abs(f) > losTolerance) return false;
+            }
+            return true;
         }
 
         private void OnDrawGizmos()

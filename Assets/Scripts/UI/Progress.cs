@@ -1,6 +1,7 @@
 using System.Collections;
-using System.Diagnostics;
+using System.Text;
 using Chunks;
+using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -9,6 +10,9 @@ namespace UI
     public class Progress : MonoBehaviour
     {
         public GameObject background;
+        public TMP_Text tmp;
+
+        private StringBuilder _sb = new();
         private ChunkManager _chunkManager;
         private int _budget = 4;
         private int _count;
@@ -23,6 +27,7 @@ namespace UI
             if (_chunkManager)
             {
                 _count = _chunkManager.MaxChunkCountPerAxis;
+                _count = Mathf.CeilToInt(_count * 0.8f);
                 _chunkManager.SetUpdate(false);
             }
             _total = (2 * _count + 1) * (2 * _count + 1) * (2 * _count + 1);
@@ -32,7 +37,12 @@ namespace UI
 
         private void Update()
         {
-            _material.SetFloat(_prop, (float) _current/_total);
+            float progress = Mathf.Clamp01((float)_current / _total);
+            _material.SetFloat(_prop, progress);
+            _sb.Clear();
+            _sb.Append(Mathf.Floor(progress*100));
+            _sb.Append('%');
+            tmp.SetText(_sb);
         }
 
         private IEnumerator LoadChunksProgress()
@@ -51,7 +61,7 @@ namespace UI
                         _current++;
                         if (_budget <= 0)
                         {
-                            _budget = 2;
+                            _budget = 4;
                             yield return null;
                         }
                     }
@@ -61,6 +71,7 @@ namespace UI
             _chunkManager.SetUpdate(true);
             gameObject.SetActive(false);
             if (background) background.SetActive(false);
+            if (tmp) tmp.gameObject.SetActive(false); 
         }
         
     }

@@ -302,6 +302,21 @@ namespace Chunks
             Vector3Int chunkCoord = WorldPosToChunkCoord(worldPos);
             return GetSdfField(chunkCoord).Sample(worldPos);
         }
+
+        /// 只采样缓存中已有的 SDF 场;场不存在(被缓存逐出/从未初始化)时返回 false,
+        /// 不隐式建场。用于只读查询(如导航 LOS 平滑)——隐式建场会触发
+        /// SdfChanged → 导航重建 → agent 路径失效,在寻路栈内构成重入。
+        public bool TrySample(Vector3 worldPos, out float sdf)
+        {
+            Vector3Int chunkCoord = WorldPosToChunkCoord(worldPos);
+            if (!_cache.TryGetSdfFromCache(chunkCoord, out SdfField field))
+            {
+                sdf = 0f;
+                return false;
+            }
+            sdf = field.Sample(worldPos);
+            return true;
+        }
         
         private void GenerateChunk(Vector3Int chunkCoord, Chunk chunk)
         {

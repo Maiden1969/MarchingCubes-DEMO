@@ -53,7 +53,7 @@ Shader "Custom/Progress"
             {
                 float border = 30;
                 float border_x = border / _ScreenParams.x;
-                float border_y = border / _ScreenParams.y;
+                float border_y = border / _ScreenParams.y + 0.2;
                 if (IN.uv.x < border_x || IN.uv.x > 1 - border_x || IN.uv.y < border_y || IN.uv.y > 1 - border_y) return half4(0, 0, 0, 1);
                 clip(_Progress - IN.uv.x);
                 half4 color = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, IN.uv) * _BaseColor;
